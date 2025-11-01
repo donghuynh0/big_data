@@ -3,10 +3,9 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
 import os
-import json
 
 
-BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "192.168.1.56:9092")
+BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "192.168.1.7:9092")
 
 # Checkpoint directories (make sure these paths are writable)
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "/tmp/parking_checkpoints")
@@ -20,6 +19,7 @@ PARKING_FEE_PER_10_MINUTES = 1000
 spark = SparkSession.builder \
     .appName("ParkingLotStatefulProcessing") \
     .config("spark.sql.streaming.schemaInference", "true") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
