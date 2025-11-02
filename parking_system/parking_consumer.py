@@ -6,7 +6,7 @@ import os
 import json
 
 
-BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "192.168.1.56:9092")
+BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "192.168.80.57:9093")
 
 # Checkpoint directories (make sure these paths are writable)
 CHECKPOINT_BASE = os.environ.get("CHECKPOINT_BASE", "/tmp/parking_checkpoints")

@@ -172,7 +172,7 @@ def parking_stream_to_kafka(
                 occupied_locations.discard(vehicle.location)
 
             # Possibly add a new vehicle
-            if random.random() > 0.6 and len(active_vehicles) < 20:
+            if random.random() > 0.6:
                 if (len(occupied_locations) < len(ParkingEvent.PARKING_LOCATIONS) and
                     len(active_license_plates) < len(ParkingEvent.LICENSE_PLATES)):
                     new_vehicle = ParkingEvent(occupied_locations, active_license_plates)
@@ -210,8 +210,9 @@ def parking_stream_to_kafka(
 
 
 if __name__ == "__main__":
+    
     # Kafka settings
-    KAFKA_BOOTSTRAP_SERVERS = '192.168.1.56:9092'
+    KAFKA_BOOTSTRAP_SERVERS = '192.168.80.57:9093'
     KAFKA_TOPIC = 'parking-events'
 
     # Stream for 30 minutes with 3s intervals

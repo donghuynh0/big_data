@@ -13,8 +13,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Global state
 parking_state = {
-    'vehicles': {},  # {license_plate: {location, entry_time, status}}
-    'locations': {},  # {location: license_plate or None}
+    'vehicles': {},  
+    'locations': {},  
     'stats': {
         'total_parked': 0,
         'total_fee': 0,
@@ -24,7 +24,7 @@ parking_state = {
 
 PARKING_FEE_PER_MINUTE = 1000
 TOTAL_SPOTS = 60
-KAFKA_SERVER = '192.168.1.56:9092'
+KAFKA_SERVER = '192.168.80.57:9093'
 KAFKA_TOPIC = 'parking-events'
 
 def calculate_fee(entry_timestamp, current_timestamp):
