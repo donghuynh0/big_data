@@ -9,7 +9,7 @@ A collection of Kafka producer applications for generating streaming data scenar
 | **E-commerce** | Order lifecycle events | `ecommerce-orders` |
 | **IoT Sensor** | Smart building sensor data | `iot-sensor-data` |
 | **Social Media** | Social platform activity events | `social-media-events` |
-| **Parking System** | Parking management with Spark consumer & web dashboard | `parking-events` |
+| **Parking System** | Parking management | `parking-events` |
 
 ## Usage
 
