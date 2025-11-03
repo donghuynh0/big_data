@@ -220,7 +220,7 @@ def parking_stream_to_kafka(
 
 if __name__ == "__main__":
     # Kafka settings
-    KAFKA_BOOTSTRAP_SERVERS = '192.168.1.7:9092'
+    KAFKA_BOOTSTRAP_SERVERS = '192.168.80.48:9092'
     KAFKA_TOPIC = 'parking-events'
 
     # Stream for 30 minutes with 3s intervals
