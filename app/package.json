@@ -10,6 +10,7 @@
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "@oxc-parser/binding-darwin-arm64": "^0.96.0",
     "@tailwindcss/vite": "^4.1.16",
     "nuxt": "^4.2.0",
     "socket.io-client": "^4.8.1",
