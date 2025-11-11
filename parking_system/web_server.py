@@ -38,7 +38,7 @@ parking_state = {
 
 PARKING_FEE_PER_MINUTE = 1000
 TOTAL_SPOTS = 84  # Updated to match new grid: 4 zones × 21 spots
-KAFKA_SERVER = '192.168.1.7:9092'
+KAFKA_SERVER = '192.168.80.57:9093'
 KAFKA_TOPIC = 'parking-events'
 
 def calculate_fee(entry_timestamp, current_timestamp):
