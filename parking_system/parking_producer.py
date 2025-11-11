@@ -6,7 +6,7 @@ from enum import Enum
 from kafka import KafkaProducer
 
 
-KAFKA_BOOTSTRAP_SERVERS = '192.168.80.101:9092'
+KAFKA_BOOTSTRAP_SERVERS = '192.168.80.57:9093'
 KAFKA_TOPIC = 'parking-events'
 
 class ParkingStatus(Enum):
