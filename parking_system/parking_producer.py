@@ -6,7 +6,7 @@ from enum import Enum
 from kafka import KafkaProducer
 
 
-KAFKA_BOOTSTRAP_SERVERS = '192.168.80.57:9093'
+KAFKA_BOOTSTRAP_SERVERS = '192.168.80.101:9092'
 KAFKA_TOPIC = 'parking-events'
 
 class ParkingStatus(Enum):
@@ -31,18 +31,22 @@ class ParkingEvent:
 
     PARKING_LOCATIONS = [
         # Floor A
-        "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10",
+        "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17", "A18", "A19", "A20", "A21",
         # Floor B
-        "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+        "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12", "B13", "B14", "B15", "B16", "B17", "B18", "B19", "B20", "B21",
         # Floor C
-        "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10",
+        "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "C17", "C18", "C19", "C20", "C21",
         # Floor D
-        "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
+        "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19", "D20", "D21",
         # Floor E
         "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10",
         # Floor F 
         "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"
     ]
+
+    CUSTOMER_NAMES = ["Alexander", "Sophia", "Benjamin", "Emma", "Oliver", "Ava", "Lucas", "Isabella", "James", "Mia"]
+    AREAS = ["Tokyo", "Osaka", "Kyoto", "Yokohama", "Nagoya", "Sapporo", "Fukuoka", "Kobe"]
+    CAR_TYPES = ["Normal", "VIP", "Electric", "Compact", "SUV"]
 
     def __init__(self, occupied_locations=None, active_license_plates=None, entry_time=None):
         if active_license_plates:
@@ -62,6 +66,10 @@ class ParkingEvent:
                 self.location = random.choice(self.PARKING_LOCATIONS)
         else:
             self.location = random.choice(self.PARKING_LOCATIONS)
+
+        self.customer_name = random.choice(self.CUSTOMER_NAMES)
+        self.area = random.choice(self.AREAS)
+        self.car_type = random.choice(self.CAR_TYPES)
 
         self.status = ParkingStatus.ENTERING
         self.parked_count = 0
@@ -95,7 +103,10 @@ class ParkingEvent:
             "license_plate": self.license_plate,
             "location": self.location,
             "status_code": self.status.name,
-            "entry_timestamp": self.entry_timestamp
+            "entry_timestamp": self.entry_timestamp,
+            "customer_name": self.customer_name,
+            "area": self.area,
+            "car_type": self.car_type
         }
 
 
@@ -169,20 +180,31 @@ def parking_stream_to_kafka(
                     active_license_plates.add(new_vehicle.license_plate)
 
             if random.random() < random_remove_probability and len(active_vehicles) > 3:
-                victim = random.choice(active_vehicles)         
-                exit_event = {
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "timestamp_unix": int(time.time()),
-                    "license_plate": victim.license_plate,
-                    "location": victim.location,
-                    "status_code": "EXITING",
-                    "entry_timestamp": victim.entry_timestamp
-                }
-                producer.send(kafka_topic, key=victim.license_plate, value=exit_event)
-                
-                active_vehicles.remove(victim)
-                occupied_locations.discard(victim.location)
-                active_license_plates.discard(victim.license_plate)
+                eligible_victims = [
+                    v for v in active_vehicles
+                    if v.status not in {ParkingStatus.ENTERING}
+                ]
+
+                if eligible_victims:
+                    victim = random.choice(eligible_victims)
+                    victim.status = ParkingStatus.EXITING
+                    exit_event = {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp_unix": int(time.time()),
+                        "license_plate": victim.license_plate,
+                        "location": victim.location,
+                        "status_code": victim.status.name,
+                        "entry_timestamp": victim.entry_timestamp,
+                        "customer_name": victim.customer_name,
+                        "area": victim.area,
+                        "car_type": victim.car_type
+                    }
+                    print(json.dumps(exit_event, ensure_ascii=False))
+                    producer.send(kafka_topic, key=victim.license_plate, value=exit_event)
+                    
+                    active_vehicles.remove(victim)
+                    occupied_locations.discard(victim.location)
+                    active_license_plates.discard(victim.license_plate)
 
             while (len(active_vehicles) < 3 and
                    len(occupied_locations) < len(ParkingEvent.PARKING_LOCATIONS) and
