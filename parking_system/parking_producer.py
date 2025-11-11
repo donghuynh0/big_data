@@ -178,6 +178,7 @@ def parking_stream_to_kafka(
                     "status_code": "EXITING",
                     "entry_timestamp": victim.entry_timestamp
                 }
+                print(json.dumps(exit_event, ensure_ascii=False))
                 producer.send(kafka_topic, key=victim.license_plate, value=exit_event)
                 
                 active_vehicles.remove(victim)
