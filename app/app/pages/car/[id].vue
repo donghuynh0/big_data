@@ -127,7 +127,7 @@
         <div class="panel-card">
           <div class="panel-header">
             <h3>Parking Fee Details</h3>
-            <div class="fee-rate-badge">1,000 VND/min</div>
+            <div class="fee-rate-badge">{{ formatNumber(vehicleData?.hourly_rate || 12000) }} {{ vehicleData?.currency || 'VND' }}/hour</div>
           </div>
           <div class="fee-breakdown">
             <div class="fee-row">
@@ -140,15 +140,29 @@
             </div>
             <div class="fee-row">
               <span class="fee-label">Duration:</span>
-              <span class="fee-value highlight">{{ vehicleData?.minutes || 0 }} minutes</span>
+              <span class="fee-value highlight">{{ vehicleData?.minutes?.toFixed(2) || 0 }} minutes</span>
+            </div>
+            <div class="fee-row">
+              <span class="fee-label">Car Type:</span>
+              <span class="fee-value">{{ vehicleData?.car_type || 'Normal' }}</span>
+            </div>
+            <div class="fee-row">
+              <span class="fee-label">Area:</span>
+              <span class="fee-value">{{ vehicleData?.area || 'Unknown' }}</span>
+            </div>
+            <div class="fee-row">
+              <span class="fee-label">Status:</span>
+              <span :class="['status-badge', vehicleData?.parking_status?.toLowerCase()]">
+                {{ vehicleData?.parking_status || 'Unknown' }}
+              </span>
             </div>
             <div class="fee-row total">
               <span class="fee-label">Total Fee:</span>
-              <span class="fee-value-large">{{ formatNumber(vehicleData?.fee || 0) }} VND</span>
+              <span class="fee-value-large">{{ formatNumber(vehicleData?.fee || 0) }} {{ vehicleData?.currency || 'VND' }}</span>
             </div>
           </div>
           <div class="fee-chart-info">
-            <p class="fee-note">💡 Fee is calculated based on parking duration at 1,000 VND per minute</p>
+            <p class="fee-note">💡 Fee is calculated based on parking duration at {{ formatNumber(vehicleData?.hourly_rate || 12000) }} {{ vehicleData?.currency || 'VND' }} per hour</p>
           </div>
         </div>
 
@@ -230,6 +244,10 @@ const parkingData = ref({
     customer_name: string
     area: string
     car_type: string
+    floor?: string
+    parking_status?: string
+    currency?: string
+    hourly_rate?: number
   }>,
   timestamp: ''
 })
@@ -302,7 +320,7 @@ const formatDateTime = (timestamp: number | undefined) => {
 
 // WebSocket functions
 const connectWebSocket = () => {
-  socket = io('http://localhost:8000', {
+  socket = io('http://192.168.80.101:8000', {
     transports: ['websocket', 'polling']
   })
 
@@ -332,7 +350,7 @@ onMounted(() => {
   connectWebSocket()
 
   // Fetch initial data
-  fetch('http://localhost:8000/api/data')
+  fetch('http://192.168.80.101:8000/api/data')
     .then(res => res.json())
     .then(data => {
       parkingData.value = data
@@ -863,6 +881,34 @@ onUnmounted(() => {
   font-size: 1.8rem;
   font-weight: 700;
   color: #48A64C;
+}
+
+/* Status Badge Styles */
+.status-badge {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-badge.parked {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #81c784;
+}
+
+.status-badge.arriving {
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+}
+
+.status-badge.leaving {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
 }
 
 @media (max-width: 768px) {

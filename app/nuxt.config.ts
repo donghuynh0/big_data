@@ -9,5 +9,9 @@ export default defineNuxtConfig({
     plugins: [
       tailwindcss(),
     ],
+  },
+  devServer: {
+    host: '192.168.80.101',
+    port: 3000
   }
 })
