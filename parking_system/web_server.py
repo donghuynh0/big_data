@@ -13,7 +13,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'parking_lot_secret'
 CORS(app)  # Enable CORS for all routes
 
-# Configure SocketIO with proper settings to avoid assertion errors
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",

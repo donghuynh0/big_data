@@ -42,13 +42,11 @@ def load_pricing_config(spark, config_path):
 
 
 def create_pricing_broadcast(spark, pricing_config):
-    """Create broadcast variable for pricing configuration"""
     return spark.sparkContext.broadcast(pricing_config)
 
 
 def create_spark_session():
-    """Create and configure Spark session with Kafka and Hadoop support"""
-    return SparkSession.builder \
+    spark =  SparkSession.builder \
         .appName("ParkingEventProcessor") \
         .config("spark.sql.streaming.checkpointLocation", CHECKPOINT_LOCATION) \
         .config("spark.sql.streaming.stateStore.providerClass", 
@@ -57,6 +55,9 @@ def create_spark_session():
         .config("spark.jars.packages", 
                 "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
         .getOrCreate()
+    spark.sparkContext.setLogLevel("ERROR")
+    
+    return spark
 
 
 def read_from_kafka(spark):
@@ -216,9 +217,6 @@ def calculate_parking_metrics(df, pricing_broadcast):
 
 
 def calculate_aggregate_statistics(df):
-    """
-    Calculate aggregate statistics across all vehicles with revenue
-    """
     # Aggregate by status
     status_stats = df.groupBy("current_status") \
         .agg(
@@ -252,7 +250,6 @@ def calculate_aggregate_statistics(df):
 
 
 def prepare_output_for_kafka(df):
-    """Prepare DataFrame for writing to Kafka (key-value format)"""
     return df.select(
         col("license_plate").alias("key"),
         to_json(struct("*")).alias("value")
@@ -260,7 +257,6 @@ def prepare_output_for_kafka(df):
 
 
 def write_to_kafka(df, query_name, output_mode="update"):
-    """Write streaming data to Kafka output topic"""
     return df.writeStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS) \
@@ -269,69 +265,30 @@ def write_to_kafka(df, query_name, output_mode="update"):
         .outputMode(output_mode) \
         .start()
 
-
-def write_to_console(df, query_name):
-    """Write streaming data to console for debugging"""
-    return df.writeStream \
-        .format("console") \
-        .option("truncate", "false") \
-        .option("numRows", 20) \
-        .outputMode("update") \
-        .queryName(query_name) \
-        .start()
-
-
 def main():
-    """Main function to run the Spark streaming application"""
-    
-    # Create Spark session
-    print("Creating Spark session...")
     spark = create_spark_session()
-    spark.sparkContext.setLogLevel("WARN")
     
-    print(f"Reading from Kafka topic: {INPUT_TOPIC}")
-    print(f"Checkpoint location: {CHECKPOINT_LOCATION}")
-    print(f"Output topic: {OUTPUT_TOPIC}")
-    
-    # Load pricing configuration
-    print(f"\nLoading pricing configuration from: {PRICING_CONFIG_PATH}")
     pricing_config = load_pricing_config(spark, PRICING_CONFIG_PATH)
     pricing_broadcast = create_pricing_broadcast(spark, pricing_config)
     
-    print(f"Currency: {pricing_config['pricing_rules']['currency']}")
     
-    # Read from Kafka
     raw_stream = read_from_kafka(spark)
     
-    # Parse JSON data
     parsed_stream = parse_parking_events(raw_stream)
     
-    # Calculate vehicle-level metrics with pricing (stateful)
     vehicle_metrics = calculate_parking_metrics(parsed_stream, pricing_broadcast)
     
-    # Prepare for Kafka output
     kafka_output = prepare_output_for_kafka(vehicle_metrics)
-    
-    # Start streaming queries
-    print("\nStarting streaming queries...")
-    
-    # Query 1: Write vehicle metrics to Kafka
+
     query_kafka = write_to_kafka(kafka_output, "vehicle_metrics_to_kafka")
     
-    # Query 2: Write to console for monitoring (optional)
-    query_console = write_to_console(vehicle_metrics, "vehicle_metrics_console")
+    print("\nStarted successfully!\n")
     
-    print("\nStreaming queries started successfully!")
-    print(f"Vehicle metrics with pricing are being written to Kafka topic: {OUTPUT_TOPIC}")
-    print("Press Ctrl+C to stop...")
-    
-    # Wait for termination
     try:
         query_kafka.awaitTermination()
     except KeyboardInterrupt:
         print("\nStopping queries...")
         query_kafka.stop()
-        query_console.stop()
         spark.stop()
         print("Application stopped successfully!")
 
