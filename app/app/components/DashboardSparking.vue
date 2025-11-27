@@ -29,6 +29,12 @@ const parkingData = ref({
     minutes: number
     fee: number
     customer_name?: string
+    area?: string
+    car_type?: string
+    floor?: string
+    parking_status?: string
+    currency?: string
+    hourly_rate?: number
   }>,
   floors: {} as Record<string, Array<{
     location: string
@@ -48,6 +54,9 @@ const parkingHistory = ref<Array<{
   fee: number
   minutes: number
   timestamp: string
+  parking_status?: string
+  currency?: string
+  hourly_rate?: number
 }>>([])
 
 const historyFilter = ref<'ALL' | 'ENTERING' | 'PARKED' | 'EXITING'>('ALL')
@@ -117,7 +126,7 @@ const parkingStats = computed(() => {
 
 // WebSocket functions
 const connectWebSocket = () => {
-  socket = io('http://localhost:8000', {
+  socket = io('http://192.168.80.101:8000', {
     transports: ['websocket', 'polling']
   })
 
@@ -215,7 +224,7 @@ const navigateToDetail = (spot: any) => {
 // History functions
 const fetchParkingHistory = async () => {
   try {
-    const response = await fetch('http://localhost:8000/api/history?limit=100')
+    const response = await fetch('http://192.168.80.101:8000/api/history?limit=100')
     const data = await response.json()
     parkingHistory.value = data.history || []
     console.log('📋 Loaded parking history:', parkingHistory.value.length, 'entries')
@@ -254,7 +263,7 @@ onMounted(() => {
   connectWebSocket()
 
   // Fetch initial data
-  fetch('http://localhost:8000/api/data')
+  fetch('http://192.168.80.101:8000/api/data')
     .then(res => res.json())
     .then(data => {
       parkingData.value = data
@@ -378,8 +387,11 @@ onUnmounted(() => {
                   <div class="table-cell">License Plate</div>
                   <div class="table-cell">Location</div>
                   <div class="table-cell">Customer</div>
+                  <div class="table-cell">Area</div>
+                  <div class="table-cell">Car Type</div>
+                  <div class="table-cell">Status</div>
                   <div class="table-cell">Time (min)</div>
-                  <div class="table-cell">Fee (VND)</div>
+                  <div class="table-cell">Fee</div>
                 </div>
                 <div class="table-body">
                   <div v-for="vehicle in parkingData.vehicles" :key="vehicle.license_plate"
@@ -389,8 +401,15 @@ onUnmounted(() => {
                     <div class="table-cell">{{ vehicle.license_plate }}</div>
                     <div class="table-cell">{{ vehicle.location }}</div>
                     <div class="table-cell">{{ vehicle.customer_name }}</div>
-                    <div class="table-cell">{{ vehicle.minutes }}</div>
-                    <div class="table-cell fee-cell">{{ formatNumber(vehicle.fee) }}</div>
+                    <div class="table-cell">{{ vehicle.area }}</div>
+                    <div class="table-cell">{{ vehicle.car_type }}</div>
+                    <div class="table-cell">
+                      <span :class="['status-badge', vehicle.parking_status?.toLowerCase()]">
+                        {{ vehicle.parking_status }}
+                      </span>
+                    </div>
+                    <div class="table-cell">{{ vehicle.minutes?.toFixed(2) }}</div>
+                    <div class="table-cell fee-cell">{{ formatNumber(vehicle.fee) }} {{ vehicle.currency || 'VND' }}</div>
                   </div>
                   <div v-if="parkingData.vehicles.length === 0" class="table-row empty">
                     <div class="table-cell" style="grid-column: 1 / -1; text-align: center;">No vehicles currently parked</div>
@@ -446,6 +465,9 @@ onUnmounted(() => {
                     <div class="table-cell">License Plate</div>
                     <div class="table-cell">Location</div>
                     <div class="table-cell">Customer</div>
+                    <div class="table-cell">Area</div>
+                    <div class="table-cell">Car Type</div>
+                    <div class="table-cell">Status</div>
                     <div class="table-cell">Duration</div>
                     <div class="table-cell">Fee</div>
                     <div class="table-cell">Time</div>
@@ -460,8 +482,15 @@ onUnmounted(() => {
                       <div class="table-cell">{{ item.license_plate }}</div>
                       <div class="table-cell">{{ item.location }}</div>
                       <div class="table-cell">{{ item.customer_name }}</div>
-                      <div class="table-cell">{{ item.minutes }} min</div>
-                      <div class="table-cell fee-cell">{{ item.fee > 0 ? formatNumber(item.fee) : '-' }}</div>
+                      <div class="table-cell">{{ item.area }}</div>
+                      <div class="table-cell">{{ item.car_type }}</div>
+                      <div class="table-cell">
+                        <span :class="['status-badge', item.parking_status?.toLowerCase()]">
+                          {{ item.parking_status || '-' }}
+                        </span>
+                      </div>
+                      <div class="table-cell">{{ item.minutes?.toFixed(2) || 0 }} min</div>
+                      <div class="table-cell fee-cell">{{ item.fee > 0 ? formatNumber(item.fee) + ' ' + (item.currency || 'VND') : '-' }}</div>
                       <div class="table-cell">{{ item.timestamp }}</div>
                     </div>
                     <div v-if="filteredHistory.length === 0" class="table-row empty">
@@ -807,8 +836,8 @@ onUnmounted(() => {
 
 .history-table .table-header {
   display: grid;
-  grid-template-columns: 100px 150px 100px 150px 100px 120px 1fr;
-  gap: 10px;
+  grid-template-columns: 90px 130px 90px 120px 100px 100px 100px 90px 130px 1fr;
+  gap: 8px;
   padding: 15px 20px;
   background: linear-gradient(135deg, #FFD77A 0%, #FFC445 100%);
   color: #333;
@@ -821,8 +850,8 @@ onUnmounted(() => {
 
 .history-table .table-row {
   display: grid;
-  grid-template-columns: 100px 150px 100px 150px 100px 120px 1fr;
-  gap: 10px;
+  grid-template-columns: 90px 130px 90px 120px 100px 100px 100px 90px 130px 1fr;
+  gap: 8px;
   padding: 15px 20px;
   border-bottom: 1px solid #f0f0f0;
   transition: background 0.2s ease;
@@ -867,5 +896,54 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   font-size: 13px;
+}
+
+/* Status Badge Styles */
+.status-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-badge.parked {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #81c784;
+}
+
+.status-badge.arriving {
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+}
+
+.status-badge.leaving {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+}
+
+/* Vehicles Table Grid */
+.vehicles-table .table-header {
+  display: grid;
+  grid-template-columns: 130px 90px 120px 100px 100px 100px 100px 140px;
+  gap: 10px;
+  padding: 15px 20px;
+}
+
+.vehicles-table .table-row {
+  display: grid;
+  grid-template-columns: 130px 90px 120px 100px 100px 100px 100px 140px;
+  gap: 10px;
+  padding: 15px 20px;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.2s ease;
+}
+
+.vehicles-table .table-row:hover {
+  background: #f8f9fa;
 }
 </style>

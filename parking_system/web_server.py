@@ -36,15 +36,14 @@ parking_state = {
     }
 }
 
-PARKING_FEE_PER_MINUTE = 1000
 TOTAL_SPOTS = 84  # Updated to match new grid: 4 zones × 21 spots
-KAFKA_SERVER = '192.168.80.101:9092'
-KAFKA_TOPIC = 'parking-events'
+KAFKA_SERVER = '192.168.80.57:9093'
+KAFKA_TOPIC = 'parking-processed'  # Changed to consume processed events
 
 # Redis connection for history storage
 try:
     redis_client = redis.Redis(
-        host='localhost',
+        host='192.168.80.101',
         port=6379,
         db=0,
         decode_responses=True
@@ -55,12 +54,7 @@ except Exception as e:
     print(f"⚠️  Redis connection failed: {e}")
     redis_client = None
 
-def calculate_fee(entry_timestamp, current_timestamp):
-    """Tính phí đỗ xe"""
-    minutes = int((current_timestamp - entry_timestamp) / 60)
-    return minutes * PARKING_FEE_PER_MINUTE, minutes
-
-def save_parking_history(event_type, license_plate, location, customer_name, area, car_type, fee=0, minutes=0, entry_timestamp=None):
+def save_parking_history(event_type, license_plate, location, customer_name, area, car_type, fee=0, minutes=0, entry_timestamp=None, parking_status=None, currency='VND', hourly_rate=0):
     """Save parking event to Redis history"""
     if not redis_client:
         return
@@ -77,7 +71,10 @@ def save_parking_history(event_type, license_plate, location, customer_name, are
             'minutes': minutes,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'timestamp_unix': int(datetime.now().timestamp()),
-            'entry_timestamp': entry_timestamp
+            'entry_timestamp': entry_timestamp,
+            'parking_status': parking_status,
+            'currency': currency,
+            'hourly_rate': hourly_rate
         }
         
         # Save to Redis list (most recent first)
@@ -91,29 +88,44 @@ def save_parking_history(event_type, license_plate, location, customer_name, are
         print(f"❌ Error saving history: {e}")
 
 def process_kafka_messages():
-    """Đọc messages từ Kafka và cập nhật state"""
+    """Read processed messages from Kafka and update state"""
     consumer = KafkaConsumer(
         KAFKA_TOPIC,
         bootstrap_servers=[KAFKA_SERVER],
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
         auto_offset_reset='latest',
-        enable_auto_commit=True
+        enable_auto_commit=True,
+        group_id='parking-web-server-group'
     )
 
     print(f"✅ Connected to Kafka: {KAFKA_SERVER}")
+    print(f"📡 Listening to topic: {KAFKA_TOPIC}")
 
     for message in consumer:
         data = message.value
-        license_plate = data['license_plate']
-        location = data['location']
-        status = data['status_code']
-        timestamp = data['timestamp_unix']
-        entry_timestamp = data['entry_timestamp']
+        
+        # Extract all fields from processed event
+        license_plate = data.get('license_plate')
+        location = data.get('current_location')
+        status = data.get('current_status')  # ENTERING, PARKED, EXITING
+        parking_status = data.get('parking_status')  # Arriving, Parked, Leaving
+        timestamp = data.get('last_timestamp')
+        entry_timestamp = data.get('first_entry')
         customer_name = data.get('customer_name', 'Unknown')
         area = data.get('area', 'Unknown')
         car_type = data.get('car_type', 'Normal')
+        floor = data.get('floor', 'Unknown')
+        
+        # Pre-calculated values from Spark
+        fee = data.get('parking_fee', 0)
+        minutes = data.get('total_parking_minutes', 0)
+        currency = data.get('currency', 'VND')
+        hourly_rate = data.get('current_hourly_rate', 0)
+        is_currently_parked = data.get('is_currently_parked', False)
 
-        # Cập nhật state và save history
+        print(f"📨 Received: {status} - {license_plate} at {location} (Fee: {fee:.2f} {currency})")
+
+        # Update state based on status
         if status == 'ENTERING':
             # Save ENTERING to history
             save_parking_history(
@@ -123,10 +135,16 @@ def process_kafka_messages():
                 customer_name=customer_name,
                 area=area,
                 car_type=car_type,
-                entry_timestamp=entry_timestamp
+                fee=fee,
+                minutes=minutes,
+                entry_timestamp=entry_timestamp,
+                parking_status=parking_status,
+                currency=currency,
+                hourly_rate=hourly_rate
             )
         
         elif status == 'PARKED':
+            # Update vehicle state
             parking_state['vehicles'][license_plate] = {
                 'location': location,
                 'entry_timestamp': entry_timestamp,
@@ -134,7 +152,13 @@ def process_kafka_messages():
                 'status': status,
                 'customer_name': customer_name,
                 'area': area,
-                'car_type': car_type
+                'car_type': car_type,
+                'floor': floor,
+                'fee': fee,
+                'minutes': minutes,
+                'currency': currency,
+                'hourly_rate': hourly_rate,
+                'parking_status': parking_status
             }
             parking_state['locations'][location] = license_plate
             
@@ -146,38 +170,43 @@ def process_kafka_messages():
                 customer_name=customer_name,
                 area=area,
                 car_type=car_type,
-                entry_timestamp=entry_timestamp
+                fee=fee,
+                minutes=minutes,
+                entry_timestamp=entry_timestamp,
+                parking_status=parking_status,
+                currency=currency,
+                hourly_rate=hourly_rate
             )
 
         elif status == 'EXITING':
+            # Get current vehicle info if exists
             if license_plate in parking_state['vehicles']:
                 info = parking_state['vehicles'][license_plate]
                 loc = info['location']
-                fee, minutes = calculate_fee(info['entry_timestamp'], timestamp)
                 
-                # Save EXITING to history
+                # Save EXITING to history with final calculated fee
                 save_parking_history(
                     event_type='EXITING',
                     license_plate=license_plate,
                     location=loc,
-                    customer_name=info.get('customer_name', 'Unknown'),
-                    area=info.get('area', 'Unknown'),
-                    car_type=info.get('car_type', 'Normal'),
+                    customer_name=customer_name,
+                    area=area,
+                    car_type=car_type,
                     fee=fee,
                     minutes=minutes,
-                    entry_timestamp=info['entry_timestamp']
+                    entry_timestamp=entry_timestamp,
+                    parking_status=parking_status,
+                    currency=currency,
+                    hourly_rate=hourly_rate
                 )
                 
+                # Clear location and remove vehicle
                 parking_state['locations'][loc] = None
                 del parking_state['vehicles'][license_plate]
 
-        # Tính toán stats
+        # Calculate stats from current state
         total_parked = len(parking_state['vehicles'])
-        total_fee = 0
-
-        for plate, info in parking_state['vehicles'].items():
-            fee, _ = calculate_fee(info['entry_timestamp'], info['current_timestamp'])
-            total_fee += fee
+        total_fee = sum(info.get('fee', 0) for info in parking_state['vehicles'].values())
 
         parking_state['stats'] = {
             'total_parked': total_parked,
@@ -189,35 +218,38 @@ def process_kafka_messages():
         try:
             socketio.emit('update', get_dashboard_data())
         except Exception as e:
-            print(f"Error broadcasting update: {e}")
+            print(f"❌ Error broadcasting update: {e}")
 
 def get_dashboard_data():
-    """Chuẩn bị dữ liệu để gửi đến frontend"""
+    """Prepare data to send to frontend (no calculations needed, use pre-calculated values)"""
     try:
         vehicles_list = []
 
         for plate, info in parking_state['vehicles'].items():
             try:
-                fee, minutes = calculate_fee(info['entry_timestamp'], info.get('current_timestamp', info['entry_timestamp']))
                 vehicles_list.append({
                     'license_plate': plate,
                     'location': info['location'],
-                    'minutes': minutes,
-                    'fee': fee,
+                    'minutes': info.get('minutes', 0),
+                    'fee': info.get('fee', 0),
                     'customer_name': info.get('customer_name', 'Unknown'),
                     'area': info.get('area', 'Unknown'),
                     'car_type': info.get('car_type', 'Normal'),
-                    'entry_timestamp': info['entry_timestamp'],
-                    'current_timestamp': info.get('current_timestamp', info['entry_timestamp'])
+                    'floor': info.get('floor', 'Unknown'),
+                    'entry_timestamp': info.get('entry_timestamp'),
+                    'current_timestamp': info.get('current_timestamp', info.get('entry_timestamp')),
+                    'parking_status': info.get('parking_status', 'Unknown'),
+                    'currency': info.get('currency', 'VND'),
+                    'hourly_rate': info.get('hourly_rate', 0)
                 })
             except Exception as e:
-                print(f"Error processing vehicle {plate}: {e}")
+                print(f"❌ Error processing vehicle {plate}: {e}")
                 continue
 
-        # Sắp xếp theo phí giảm dần
+        # Sort by fee (descending)
         vehicles_list.sort(key=lambda x: x['fee'], reverse=True)
 
-        # Nhóm vị trí theo tầng
+        # Group locations by floor
         floors = defaultdict(list)
         for location, plate in parking_state['locations'].items():
             if plate:
@@ -238,7 +270,7 @@ def get_dashboard_data():
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
     except Exception as e:
-        print(f"Error in get_dashboard_data: {e}")
+        print(f"❌ Error in get_dashboard_data: {e}")
         return {
             'stats': {
                 'total_parked': 0,
@@ -255,7 +287,7 @@ def index():
     return jsonify({
         'message': 'Parking System WebSocket API Server',
         'endpoints': {
-            'websocket': 'ws://localhost:8000',
+            'websocket': 'ws://192.168.80.101:8000',
             'api_data': '/api/data'
         },
         'status': 'running'
@@ -268,22 +300,25 @@ def get_data():
 
 @app.route('/api/vehicle/<license_plate>')
 def get_vehicle(license_plate):
-    """REST API endpoint to get specific vehicle data"""
+    """REST API endpoint to get specific vehicle data (uses pre-calculated values)"""
     try:
         if license_plate in parking_state['vehicles']:
             info = parking_state['vehicles'][license_plate]
-            fee, minutes = calculate_fee(info['entry_timestamp'], info.get('current_timestamp', info['entry_timestamp']))
 
             return jsonify({
                 'license_plate': license_plate,
                 'location': info['location'],
-                'minutes': minutes,
-                'fee': fee,
+                'minutes': info.get('minutes', 0),
+                'fee': info.get('fee', 0),
                 'customer_name': info.get('customer_name', 'Unknown'),
                 'area': info.get('area', 'Unknown'),
                 'car_type': info.get('car_type', 'Normal'),
-                'entry_timestamp': info['entry_timestamp'],
-                'current_timestamp': info.get('current_timestamp', info['entry_timestamp']),
+                'floor': info.get('floor', 'Unknown'),
+                'entry_timestamp': info.get('entry_timestamp'),
+                'current_timestamp': info.get('current_timestamp', info.get('entry_timestamp')),
+                'parking_status': info.get('parking_status', 'Unknown'),
+                'currency': info.get('currency', 'VND'),
+                'hourly_rate': info.get('hourly_rate', 0),
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
         else:
@@ -292,7 +327,7 @@ def get_vehicle(license_plate):
                 'license_plate': license_plate
             }), 404
     except Exception as e:
-        print(f"Error getting vehicle {license_plate}: {e}")
+        print(f"❌ Error getting vehicle {license_plate}: {e}")
         return jsonify({
             'error': str(e),
             'license_plate': license_plate
@@ -367,5 +402,5 @@ if __name__ == '__main__':
     kafka_thread = threading.Thread(target=process_kafka_messages, daemon=True)
     kafka_thread.start()
     
-    print("🚀 Starting web server on http://localhost:8000")
+    print("🚀 Starting web server on http://192.168.80.101:8000")
     socketio.run(app, host='0.0.0.0', port=8000, debug=False)
