@@ -2,13 +2,13 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     from_json, col, current_timestamp, window, 
     count, sum as _sum, avg, min as _min, max as _max,
-    expr, when, lit, to_json, struct, hour, from_unixtime,
-    udf, broadcast
+    expr, when, lit, to_json, struct, hour, from_unixtime
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, 
     TimestampType, DoubleType, MapType
 )
+from pyspark.sql.streaming import GroupState, GroupStateTimeout
 import json
 
 # Configuration
@@ -30,9 +30,29 @@ parking_schema = StructType([
     StructField("car_type", StringType(), True)
 ])
 
+output_schema = StructType([
+    StructField("license_plate", StringType(), True),
+    StructField("last_update", TimestampType(), True),
+    StructField("last_timestamp", IntegerType(), True),
+    StructField("current_status", StringType(), True),
+    StructField("current_location", StringType(), True),
+    StructField("total_parking_minutes", DoubleType(), True),
+    StructField("event_count", IntegerType(), True),
+    StructField("customer_name", StringType(), True),
+    StructField("area", StringType(), True),
+    StructField("car_type", StringType(), True),
+    StructField("floor", StringType(), True),
+    StructField("first_entry", IntegerType(), True),
+    StructField("current_hour", IntegerType(), True),
+    StructField("parking_fee", DoubleType(), True),
+    StructField("is_currently_parked", StringType(), True),
+    StructField("parking_status", StringType(), True),
+    StructField("currency", StringType(), True),
+    StructField("current_hourly_rate", DoubleType(), True)
+])
+
 
 def load_pricing_config(spark, config_path):
-    # Read JSON file from HDFS
     df = spark.read.option("multiline", "true").json(config_path)
     config_json = df.toJSON().collect()[0]
     config = json.loads(config_json)
@@ -41,19 +61,13 @@ def load_pricing_config(spark, config_path):
     return config
 
 
-def create_pricing_broadcast(spark, pricing_config):
-    return spark.sparkContext.broadcast(pricing_config)
-
-
 def create_spark_session():
-    spark =  SparkSession.builder \
+    spark = SparkSession.builder \
         .appName("ParkingEventProcessor") \
         .config("spark.sql.streaming.checkpointLocation", CHECKPOINT_LOCATION) \
         .config("spark.sql.streaming.stateStore.providerClass", 
                 "org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider") \
         .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false") \
-        .config("spark.jars.packages", 
-                "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
         .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     
@@ -61,7 +75,6 @@ def create_spark_session():
 
 
 def read_from_kafka(spark):
-    """Read streaming data from Kafka"""
     return spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS) \
@@ -72,7 +85,6 @@ def read_from_kafka(spark):
 
 
 def parse_parking_events(df):
-    """Parse JSON data from Kafka value column"""
     return df.select(
         col("key").cast("string").alias("kafka_key"),
         from_json(col("value").cast("string"), parking_schema).alias("data"),
@@ -85,7 +97,6 @@ def parse_parking_events(df):
 
 
 def calculate_hourly_rate(hour_val, pricing_config):
-    """Calculate rate based on hour of day"""
     rates = pricing_config["pricing_rules"]["time_based_rates"]
     
     for rate_rule in rates:
@@ -98,155 +109,167 @@ def calculate_hourly_rate(hour_val, pricing_config):
         if start < end:
             if start <= hour_val < end:
                 return float(rate_rule["rate_per_hour"])
-        else:  # Wraps around midnight
+        else:
             if hour_val >= start or hour_val < end:
                 return float(rate_rule["rate_per_hour"])
     
-    return 12000.0  # Default rate
+    return 12000.0
 
 
 def calculate_parking_fee(entry_ts, exit_ts, car_type, floor, pricing_config):
-    """Calculate total parking fee"""
     pricing_rules = pricing_config["pricing_rules"]
     
-    # Calculate duration in hours
     duration_seconds = exit_ts - entry_ts
     duration_hours = duration_seconds / 3600.0
     
-    # Get multipliers
     car_multiplier = pricing_rules["car_type_multipliers"].get(car_type, 1.0)
     floor_multiplier = pricing_rules["floor_multipliers"].get(floor, 1.0)
     
-    # Calculate base fee (simplified - using average rate for now)
-    # In production, you'd calculate hour-by-hour
-    avg_rate = 12000.0  # You can calculate weighted average based on time slots
+    avg_rate = 12000.0
     base_fee = duration_hours * avg_rate
     
-    # Apply multipliers
     total_fee = base_fee * car_multiplier * floor_multiplier
     
     return float(total_fee)
 
 
-def calculate_parking_metrics(df, pricing_broadcast):
+def update_vehicle_state(license_plate, events, state, pricing_config):
     """
-    Calculate stateful metrics for each vehicle with pricing
+    Stateful function to handle deduplication and conflict resolution
+    for events from multiple machines
     """
-    # Convert timestamp string to actual timestamp
-    df = df.withColumn("event_time", 
-                       expr("to_timestamp(timestamp, 'yyyy-MM-dd HH:mm:ss')"))
+    from datetime import datetime
     
-    # Calculate parking duration in minutes
-    df = df.withColumn("parking_duration_minutes",
-                       expr("(timestamp_unix - entry_timestamp) / 60"))
+    # Get existing state or initialize
+    if state.exists:
+        existing = state.get()
+    else:
+        existing = {
+            'last_timestamp': 0,
+            'event_count': 0,
+            'first_entry': None,
+            'current_status': None,
+            'current_location': None,
+            'customer_name': None,
+            'area': None,
+            'car_type': None,
+            'seen_events': set()
+        }
     
-    # Add floor information extracted from location
-    df = df.withColumn("floor", expr("substring(location, 1, 1)"))
+    # Sort events by timestamp to process in order
+    sorted_events = sorted(events, key=lambda x: (x.timestamp_unix, x.kafka_timestamp))
     
-    # Add hour of day for rate calculation
-    df = df.withColumn("event_hour", hour(col("event_time")))
+    # Process each event with deduplication
+    for event in sorted_events:
+        # Create unique event ID for deduplication
+        event_id = f"{event.license_plate}_{event.timestamp_unix}_{event.status_code}_{event.location}"
+        
+        # Skip duplicate events
+        if event_id in existing['seen_events']:
+            continue
+        
+        # Add to seen events (keep last 1000 for memory efficiency)
+        existing['seen_events'].add(event_id)
+        if len(existing['seen_events']) > 1000:
+            existing['seen_events'] = set(list(existing['seen_events'])[-1000:])
+        
+        # Update state only if timestamp is newer or equal (for conflict resolution)
+        if event.timestamp_unix >= existing['last_timestamp']:
+            # If same timestamp, resolve by status priority: EXITING > MOVING > PARKED > ENTERING
+            if event.timestamp_unix == existing['last_timestamp']:
+                status_priority = {'EXITING': 4, 'MOVING': 3, 'PARKED': 2, 'ENTERING': 1}
+                current_priority = status_priority.get(existing['current_status'], 0)
+                new_priority = status_priority.get(event.status_code, 0)
+                
+                if new_priority <= current_priority:
+                    continue
+            
+            existing['last_timestamp'] = event.timestamp_unix
+            existing['current_status'] = event.status_code
+            existing['current_location'] = event.location
+            existing['customer_name'] = event.customer_name
+            existing['area'] = event.area
+            existing['car_type'] = event.car_type
+            existing['event_count'] += 1
+            
+            # Set first entry timestamp
+            if existing['first_entry'] is None:
+                existing['first_entry'] = event.entry_timestamp
     
-    # Calculate total parked time and status changes per vehicle
-    vehicle_metrics = df.groupBy("license_plate") \
-        .agg(
-            _max("event_time").alias("last_update"),
-            _max("timestamp_unix").alias("last_timestamp"),
-            _max("status_code").alias("current_status"),
-            _max("location").alias("current_location"),
-            _max("parking_duration_minutes").alias("total_parking_minutes"),
-            count("*").alias("event_count"),
-            _max("customer_name").alias("customer_name"),
-            _max("area").alias("area"),
-            _max("car_type").alias("car_type"),
-            _max("floor").alias("floor"),
-            _min("entry_timestamp").alias("first_entry"),
-            _max("event_hour").alias("current_hour")
-        )
+    # Update state
+    state.update(existing)
     
-    # Create UDF for fee calculation
-    pricing_config = pricing_broadcast.value
-    
-    def calculate_fee_udf(entry_ts, exit_ts, car_type, floor):
-        if entry_ts is None or exit_ts is None:
-            return 0.0
-        return calculate_parking_fee(entry_ts, exit_ts, car_type, floor, pricing_config)
-    
-    fee_udf = udf(calculate_fee_udf, DoubleType())
+    # Calculate derived metrics
+    floor = existing['current_location'][0] if existing['current_location'] else 'A'
+    parking_duration_minutes = (existing['last_timestamp'] - existing['first_entry']) / 60.0 if existing['first_entry'] else 0.0
     
     # Calculate parking fee
-    vehicle_metrics = vehicle_metrics.withColumn(
-        "parking_fee",
-        fee_udf(
-            col("first_entry"),
-            col("last_timestamp"),
-            col("car_type"),
-            col("floor")
+    parking_fee = 0.0
+    if existing['first_entry'] and existing['last_timestamp']:
+        parking_fee = calculate_parking_fee(
+            existing['first_entry'],
+            existing['last_timestamp'],
+            existing['car_type'],
+            floor,
+            pricing_config
         )
-    )
     
-    # Add computed fields
-    vehicle_metrics = vehicle_metrics.withColumn(
-        "is_currently_parked",
-        when(col("current_status") == "PARKED", lit(True)).otherwise(lit(False))
-    ).withColumn(
-        "parking_status",
-        when(col("current_status") == "ENTERING", lit("Arriving"))
-        .when(col("current_status") == "PARKED", lit("Parked"))
-        .when(col("current_status") == "MOVING", lit("Leaving Soon"))
-        .when(col("current_status") == "EXITING", lit("Exited"))
-        .otherwise(lit("Unknown"))
-    ).withColumn(
-        "currency",
-        lit(pricing_config["pricing_rules"]["currency"])
-    )
+    # Determine parking status
+    status_map = {
+        'ENTERING': 'Arriving',
+        'PARKED': 'Parked',
+        'MOVING': 'Leaving Soon',
+        'EXITING': 'Exited'
+    }
+    parking_status = status_map.get(existing['current_status'], 'Unknown')
     
-    # Calculate hourly rate for current time
-    def get_hourly_rate_udf(hour_val):
-        if hour_val is None:
-            return 12000.0
-        return calculate_hourly_rate(hour_val, pricing_config)
+    # Calculate current hour and hourly rate
+    current_hour = datetime.fromtimestamp(existing['last_timestamp']).hour if existing['last_timestamp'] else 0
+    current_hourly_rate = calculate_hourly_rate(current_hour, pricing_config)
     
-    rate_udf = udf(get_hourly_rate_udf, DoubleType())
+    # Return output row
+    return [(
+        license_plate,
+        datetime.fromtimestamp(existing['last_timestamp']) if existing['last_timestamp'] else None,
+        existing['last_timestamp'],
+        existing['current_status'],
+        existing['current_location'],
+        parking_duration_minutes,
+        existing['event_count'],
+        existing['customer_name'],
+        existing['area'],
+        existing['car_type'],
+        floor,
+        existing['first_entry'],
+        current_hour,
+        parking_fee,
+        str(existing['current_status'] == 'PARKED'),
+        parking_status,
+        pricing_config['pricing_rules']['currency'],
+        current_hourly_rate
+    )]
+
+
+def calculate_parking_metrics(df, pricing_config):
+    # Add event_time and floor
+    df = df.withColumn("event_time", expr("to_timestamp(timestamp, 'yyyy-MM-dd HH:mm:ss')"))
+    df = df.withColumn("floor", expr("substring(location, 1, 1)"))
+    df = df.withColumn("event_hour", hour(col("event_time")))
     
-    vehicle_metrics = vehicle_metrics.withColumn(
-        "current_hourly_rate",
-        rate_udf(col("current_hour"))
-    )
+    # Use mapGroupsWithState for stateful deduplication
+    def state_update_func(license_plate, events, state):
+        return update_vehicle_state(license_plate, events, state, pricing_config)
+    
+    vehicle_metrics = df \
+        .groupByKey(lambda row: row.license_plate) \
+        .mapGroupsWithState(
+            state_update_func,
+            output_schema,
+            output_schema,
+            GroupStateTimeout.NoTimeout
+        )
     
     return vehicle_metrics
-
-
-def calculate_aggregate_statistics(df):
-    # Aggregate by status
-    status_stats = df.groupBy("current_status") \
-        .agg(
-            count("*").alias("vehicle_count"),
-            avg("total_parking_minutes").alias("avg_parking_minutes"),
-            _sum("parking_fee").alias("total_revenue"),
-            avg("parking_fee").alias("avg_fee")
-        ).withColumn("metric_type", lit("by_status"))
-    
-    # Aggregate by floor
-    floor_stats = df.groupBy("floor") \
-        .agg(
-            count("*").alias("vehicle_count"),
-            avg("total_parking_minutes").alias("avg_parking_minutes"),
-            _sum("parking_fee").alias("total_revenue"),
-            avg("parking_fee").alias("avg_fee")
-        ).withColumn("metric_type", lit("by_floor")) \
-        .withColumnRenamed("floor", "current_status")
-    
-    # Aggregate by car type
-    car_type_stats = df.groupBy("car_type") \
-        .agg(
-            count("*").alias("vehicle_count"),
-            avg("total_parking_minutes").alias("avg_parking_minutes"),
-            _sum("parking_fee").alias("total_revenue"),
-            avg("parking_fee").alias("avg_fee")
-        ).withColumn("metric_type", lit("by_car_type")) \
-        .withColumnRenamed("car_type", "current_status")
-    
-    return status_stats, floor_stats, car_type_stats
 
 
 def prepare_output_for_kafka(df):
@@ -265,21 +288,16 @@ def write_to_kafka(df, query_name, output_mode="update"):
         .outputMode(output_mode) \
         .start()
 
+
 def main():
     spark = create_spark_session()
     
     pricing_config = load_pricing_config(spark, PRICING_CONFIG_PATH)
-    pricing_broadcast = create_pricing_broadcast(spark, pricing_config)
-    
     
     raw_stream = read_from_kafka(spark)
-    
     parsed_stream = parse_parking_events(raw_stream)
-    
-    vehicle_metrics = calculate_parking_metrics(parsed_stream, pricing_broadcast)
-    
+    vehicle_metrics = calculate_parking_metrics(parsed_stream, pricing_config)
     kafka_output = prepare_output_for_kafka(vehicle_metrics)
-
     query_kafka = write_to_kafka(kafka_output, "vehicle_metrics_to_kafka")
     
     print("\nStarted successfully!\n")

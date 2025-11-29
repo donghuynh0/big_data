@@ -316,7 +316,7 @@
             </div>
             <div class="stat-card">
                 <div class="stat-icon">📍</div>
-                <div class="stat-value" id="availableSpots">60</div>
+                <div class="stat-value" id="availableSpots">105</div>
                 <div class="stat-label">Vị Trí Trống</div>
             </div>
         </div>
@@ -343,7 +343,7 @@
     </div>
 
     <script>
-        const socket = io();
+        const socket = io('http://192.168.80.102:8000');
         const connectionStatus = document.getElementById('connectionStatus');
 
         socket.on('connect', () => {
@@ -361,11 +361,9 @@
         });
 
         function updateDashboard(data) {
-            // Update timestamp
             document.getElementById('timestamp').textContent = 
                 `Cập nhật lúc: ${data.timestamp}`;
 
-            // Update stats
             document.getElementById('totalParked').textContent = 
                 data.stats.total_parked;
             document.getElementById('totalFee').textContent = 
@@ -373,7 +371,6 @@
             document.getElementById('availableSpots').textContent = 
                 data.stats.available_spots;
 
-            // Update vehicles grid
             const vehiclesGrid = document.getElementById('vehiclesGrid');
             if (data.vehicles.length === 0) {
                 vehiclesGrid.innerHTML = 
@@ -402,12 +399,12 @@
                 });
             }
 
-            // Update floors with grid layout
             const floorsGrid = document.getElementById('floorsGrid');
-            const floors = ['A', 'B', 'C', 'D', 'E', 'F'];
-            const spotsPerFloor = 10;
+            const floorConfig = {
+                'A': 21, 'B': 21, 'C': 21, 'D': 21, 'E': 21, 'F': 10
+            };
 
-            floorsGrid.innerHTML = floors.map(floor => {
+            floorsGrid.innerHTML = Object.entries(floorConfig).map(([floor, spots]) => {
                 const floorData = data.floors[floor] || [];
                 const occupiedSpots = {};
                 floorData.forEach(spot => {
@@ -415,18 +412,15 @@
                 });
 
                 const allSpots = [];
-                for (let i = 1; i <= spotsPerFloor; i++) {
+                for (let i = 1; i <= spots; i++) {
                     const spotLocation = `${floor}${i}`;
                     const spotData = occupiedSpots[spotLocation];
 
                     if (spotData) {
                         const vehicleInfo = vehicleInfoMap[spotData.license_plate] || {};
-
                         const minutes = vehicleInfo.minutes || 0;
                         const fee = vehicleInfo.fee || 0;
                         const plate = spotData.license_plate;
-
-                        console.log(`Spot ${spotLocation}: ${minutes} minutes, ${fee} fee, plate ${plate}`);
 
                         allSpots.push(`
                             <div class="spot occupied">
@@ -447,12 +441,11 @@
                         `);
                     }
                 }
-
                 
                 return `
                     <div class="floor-section">
                         <div class="floor-title">
-                            Tầng ${floor} (${floorData.length}/${spotsPerFloor} xe)
+                            Tầng ${floor} (${floorData.length}/${spots} xe)
                         </div>
                         <div class="spots-container">
                             ${allSpots.join('')}
@@ -466,8 +459,7 @@
             return new Intl.NumberFormat('vi-VN').format(num);
         }
 
-        // Initial load
-        fetch('/api/data')
+        fetch('http://192.168.80.102:8000/api/data')
             .then(res => res.json())
             .then(data => updateDashboard(data))
             .catch(err => console.error('Error loading initial data:', err));
